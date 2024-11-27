@@ -6,23 +6,23 @@ TEST(RNTupleModel, EnforceValidFieldNames)
 
    // MakeField
    try {
-      auto field3 = model->MakeField<float>("", 42.0);
+      auto field3 = model->MakeField<float>("");
       FAIL() << "empty string as field name should throw";
    } catch (const RException &err) {
       EXPECT_THAT(err.what(), testing::HasSubstr("name cannot be empty string"));
    }
    try {
-      auto field3 = model->MakeField<float>("pt.pt", 42.0);
+      auto field3 = model->MakeField<float>("pt.pt");
       FAIL() << "field name with periods should throw";
    } catch (const RException &err) {
       EXPECT_THAT(err.what(), testing::HasSubstr("name 'pt.pt' cannot contain character '.'"));
    }
 
    // Previous failures to create 'pt' should not block the name
-   auto field = model->MakeField<float>("pt", 42.0);
+   auto field = model->MakeField<float>("pt");
 
    try {
-      auto field2 = model->MakeField<float>("pt", 42.0);
+      model->MakeField<float>("pt");
       FAIL() << "repeated field names should throw";
    } catch (const RException &err) {
       EXPECT_THAT(err.what(), testing::HasSubstr("field name 'pt' already exists"));
@@ -42,7 +42,7 @@ TEST(RNTupleModel, FieldDescriptions)
    FileRaii fileGuard("test_ntuple_field_descriptions.root");
    auto model = RNTupleModel::Create();
 
-   auto pt = model->MakeField<float>({"pt", "transverse momentum"}, 42.0);
+   model->MakeField<float>({"pt", "transverse momentum"});
 
    auto charge = std::make_unique<RField<float>>(RField<float>("charge"));
    charge->SetDescription("electric charge");
@@ -110,27 +110,26 @@ TEST(RNTupleModel, EstimateWriteMemoryUsage)
    auto customStructVec = model->MakeField<std::vector<CustomStruct>>("CustomStructVec");
 
    static constexpr std::size_t NumColumns = 10;
-   static constexpr std::size_t ColumnElementsSize = 8 + 4 + 8 + 4 + 8 + 8 + 4 + 8 + 1 + 1;
-   static constexpr std::size_t InitialNElementsPerPage = 1;
+   static constexpr std::size_t InitialPageSize = 8;
    static constexpr std::size_t MaxPageSize = 100;
    static constexpr std::size_t ClusterSize = 6789;
    RNTupleWriteOptions options;
-   options.SetInitialNElementsPerPage(InitialNElementsPerPage);
+   options.SetInitialUnzippedPageSize(InitialPageSize);
    options.SetMaxUnzippedPageSize(MaxPageSize);
    options.SetApproxZippedClusterSize(ClusterSize);
 
-   // Tail page optimization and buffered writing on, IMT not disabled.
-   static constexpr std::size_t Expected1 = NumColumns * MaxPageSize + ColumnElementsSize + 3 * ClusterSize;
+   // Buffered writing on, IMT not disabled.
+   static constexpr std::size_t Expected1 = NumColumns * MaxPageSize + NumColumns * InitialPageSize + 3 * ClusterSize;
    EXPECT_EQ(model->EstimateWriteMemoryUsage(options), Expected1);
 
    static constexpr std::size_t PageBufferBudget = 800;
    options.SetPageBufferBudget(PageBufferBudget);
-   static constexpr std::size_t Expected2 = PageBufferBudget + ColumnElementsSize + 3 * ClusterSize;
+   static constexpr std::size_t Expected2 = PageBufferBudget + NumColumns * InitialPageSize + 3 * ClusterSize;
    EXPECT_EQ(model->EstimateWriteMemoryUsage(options), Expected2);
 
    // Disable IMT.
    options.SetUseImplicitMT(RNTupleWriteOptions::EImplicitMT::kOff);
-   static constexpr std::size_t Expected3 = PageBufferBudget + ColumnElementsSize + ClusterSize;
+   static constexpr std::size_t Expected3 = PageBufferBudget + NumColumns * InitialPageSize + ClusterSize;
    EXPECT_EQ(model->EstimateWriteMemoryUsage(options), Expected3);
 
    // Disable buffered writing.
@@ -177,13 +176,13 @@ TEST(RNTupleModel, RegisterSubfield)
    FileRaii fileGuard("test_rentry_subfields.root");
    {
       auto model = RNTupleModel::Create();
-      model->MakeField<float>("a", 3.14f);
-      model->MakeField<CustomStruct>("struct", CustomStruct{1.f, {2.f, 3.f}, {{4.f}, {5.f, 6.f, 7.f}}, "foo"});
-      model->MakeField<std::vector<CustomStruct>>(
-         "structVec", std::vector{CustomStruct{.1f, {.2f, .3f}, {{.4f}, {.5f, .6f, .7f}}, "bar"},
-                                  CustomStruct{-1.f, {-2.f, -3.f}, {{-4.f}, {-5.f, -6.f, -7.f}}, "baz"}});
-      model->MakeField<std::pair<CustomStruct, int>>(
-         "structPair", std::pair{CustomStruct{.1f, {.2f, .3f}, {{.4f}, {.5f, .6f, .7f}}, "bar"}, 42});
+      *model->MakeField<float>("a") = 3.14f;
+      *model->MakeField<CustomStruct>("struct") = CustomStruct{1.f, {2.f, 3.f}, {{4.f}, {5.f, 6.f, 7.f}}, "foo"};
+      *model->MakeField<std::vector<CustomStruct>>("structVec") =
+         std::vector{CustomStruct{.1f, {.2f, .3f}, {{.4f}, {.5f, .6f, .7f}}, "bar"},
+                     CustomStruct{-1.f, {-2.f, -3.f}, {{-4.f}, {-5.f, -6.f, -7.f}}, "baz"}};
+      *model->MakeField<std::pair<CustomStruct, int>>("structPair") =
+         std::pair{CustomStruct{.1f, {.2f, .3f}, {{.4f}, {.5f, .6f, .7f}}, "bar"}, 42};
 
       auto ntuple = RNTupleWriter::Recreate(std::move(model), "ntuple", fileGuard.GetPath());
       ntuple->Fill();
@@ -315,4 +314,78 @@ TEST(RNTupleModel, CloneRegisteredSubfield)
 
    auto clone = model->Clone();
    EXPECT_TRUE(clone->GetDefaultEntry().GetPtr<float>("struct.a"));
+}
+
+TEST(RNTupleModel, Expire)
+{
+   auto model = RNTupleModel::Create();
+   model->MakeField<CustomStruct>("struct")->a = 1.0;
+
+   try {
+      model->Expire();
+      FAIL() << "attempting expire unfrozen model should fail";
+   } catch (const RException &err) {
+      EXPECT_THAT(err.what(), testing::HasSubstr("invalid attempt to expire unfrozen model"));
+   }
+
+   model->Freeze();
+   model->Expire();
+
+   EXPECT_EQ(0u, model->GetModelId());
+   EXPECT_NE(0, model->GetSchemaId());
+   auto clone = model->Clone();
+   EXPECT_NE(0, clone->GetModelId());
+   EXPECT_EQ(model->GetSchemaId(), clone->GetSchemaId());
+
+   auto token = model->GetToken("struct");
+   EXPECT_FLOAT_EQ(1.0, model->GetDefaultEntry().GetPtr<CustomStruct>(token)->a);
+
+   EXPECT_TRUE(model->GetRegisteredSubfields().empty());
+   EXPECT_TRUE(model->GetDescription().empty());
+
+   EXPECT_THROW(model->MakeField<float>("E"), RException);
+   EXPECT_THROW(model->AddField(RFieldBase::Create("E", "float").Unwrap()), RException);
+   EXPECT_THROW(model->RegisterSubfield("struct.a"), RException);
+   EXPECT_THROW(model->AddProjectedField(RFieldBase::Create("a", "float").Unwrap(),
+                                         [](const std::string &) { return "struct.a"; }),
+                RException);
+   EXPECT_THROW(model->CreateEntry(), RException);
+   EXPECT_THROW(model->CreateBareEntry(), RException);
+   EXPECT_THROW(model->CreateBulk("struct"), RException);
+   EXPECT_THROW(model->GetMutableFieldZero(), RException);
+   EXPECT_THROW(model->GetMutableField("struct"), RException);
+   EXPECT_THROW(model->SetDescription("x"), RException);
+
+   FileRaii fileGuard("test_ntuple_model_expire.root");
+   EXPECT_THROW(RNTupleWriter::Recreate(std::move(model), "ntpl", fileGuard.GetPath()), RException);
+   auto writer = RNTupleWriter::Recreate(std::move(clone), "ntpl", fileGuard.GetPath());
+   writer.reset();
+   auto reader = RNTupleReader::Open("ntpl", fileGuard.GetPath());
+   EXPECT_EQ(0u, reader->GetNEntries());
+}
+
+TEST(RNTupleModel, ExpireWithWriter)
+{
+   FileRaii fileGuard("test_ntuple_model_expire_with_writer.root");
+
+   auto model = RNTupleModel::Create();
+   *model->MakeField<float>("pt") = 1.0;
+   auto writer = RNTupleWriter::Recreate(std::move(model), "ntpl", fileGuard.GetPath());
+   writer->Fill();
+   writer->CommitDataset();
+
+   writer->CommitCluster(true); // noop
+   writer->FlushCluster();      // noop;
+   writer->CommitDataset();     // noop
+   EXPECT_EQ(1u, writer->GetNEntries());
+   EXPECT_EQ(1u, writer->GetLastFlushed());
+   EXPECT_EQ(1u, writer->GetLastCommitted());
+   EXPECT_EQ(1u, writer->GetLastCommittedClusterGroup());
+
+   EXPECT_THROW(writer->Fill(), RException);
+   EXPECT_THROW(writer->FlushColumns(), RException);
+   EXPECT_THROW(writer->CreateEntry(), RException);
+   EXPECT_THROW(writer->CreateModelUpdater(), RException);
+
+   EXPECT_FLOAT_EQ(1.0, *writer->GetModel().GetDefaultEntry().GetPtr<float>("pt"));
 }

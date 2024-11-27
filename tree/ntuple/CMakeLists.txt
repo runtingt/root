@@ -58,6 +58,10 @@ SOURCES
   v7/src/RColumn.cxx
   v7/src/RColumnElement.cxx
   v7/src/RField.cxx
+  v7/src/RFieldBase.cxx
+  v7/src/RFieldMeta.cxx
+  v7/src/RFieldSequenceContainer.cxx
+  v7/src/RFieldUtils.cxx
   v7/src/RFieldVisitor.cxx
   v7/src/RMiniFile.cxx
   v7/src/RNTuple.cxx

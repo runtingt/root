@@ -33,10 +33,9 @@
 namespace ROOT {
 namespace Experimental {
 
-namespace Internal {
 class RNTupleProcessor;
 class RNTupleChainProcessor;
-}
+class RNTupleJoinProcessor;
 
 // clang-format off
 /**
@@ -54,6 +53,7 @@ class REntry {
    friend class RNTupleFillContext;
    friend class RNTupleProcessor;
    friend class RNTupleChainProcessor;
+   friend class RNTupleJoinProcessor;
 
 public:
    /// The field token identifies a (sub)field in this entry. It can be used for fast indexing in REntry's methods, e.g.
@@ -92,19 +92,23 @@ private:
    }
 
    /// While building the entry, adds a new value to the list and return the value's shared pointer
-   template <typename T, typename... ArgsT>
-   std::shared_ptr<T> AddValue(RField<T> &field, ArgsT &&...args)
+   template <typename T>
+   std::shared_ptr<T> AddValue(RField<T> &field)
    {
       fFieldName2Token[field.GetQualifiedFieldName()] = fValues.size();
-      auto ptr = std::make_shared<T>(std::forward<ArgsT>(args)...);
-      fValues.emplace_back(field.BindValue(ptr));
-      return ptr;
+      auto value = field.CreateValue();
+      fValues.emplace_back(value);
+      return value.template GetPtr<T>();
    }
 
    /// Update the RValue for a field in the entry. To be used when its underlying RFieldBase changes, which typically
    /// happens when page source the field values are read from changes.
    void UpdateValue(RFieldToken token, RFieldBase::RValue &&value) { std::swap(fValues.at(token.fIndex), value); }
    void UpdateValue(RFieldToken token, RFieldBase::RValue &value) { std::swap(fValues.at(token.fIndex), value); }
+
+   /// Return the RValue currently bound to the provided field.
+   RFieldBase::RValue &GetValue(RFieldToken token) { return fValues.at(token.fIndex); }
+   RFieldBase::RValue &GetValue(std::string_view fieldName) { return GetValue(GetToken(fieldName)); }
 
    void Read(NTupleSize_t index)
    {

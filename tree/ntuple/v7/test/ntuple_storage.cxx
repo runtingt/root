@@ -67,10 +67,11 @@ TEST(RNTuple, Basics)
 
    {
       auto model = RNTupleModel::Create();
-      auto wrPt = model->MakeField<float>("pt", 42.0);
+      auto wrPt = model->MakeField<float>("pt");
 
       auto ntuple = RNTupleWriter::Recreate(std::move(model), "f", fileGuard.GetPath());
       EXPECT_EQ(ntuple->GetNEntries(), 0);
+      *wrPt = 42.0;
       ntuple->Fill();
       EXPECT_EQ(ntuple->GetNEntries(), 1);
       EXPECT_EQ(ntuple->GetLastCommitted(), 0);
@@ -144,18 +145,23 @@ TEST(RNTuple, InvalidWriteOptions)
 {
    RNTupleWriteOptions options;
    try {
+      options.SetInitialUnzippedPageSize(0);
+      FAIL() << "should not allow zero initial page size";
+   } catch (const RException &err) {
+      EXPECT_THAT(err.what(), testing::HasSubstr("initial page size"));
+   }
+   try {
       options.SetMaxUnzippedPageSize(0);
       FAIL() << "should not allow zero-sized page";
    } catch (const RException &err) {
-      EXPECT_THAT(err.what(), testing::HasSubstr("page size"));
+      EXPECT_THAT(err.what(), testing::HasSubstr("maximum page size"));
    }
    try {
-      options.SetInitialNElementsPerPage(0);
-      FAIL() << "should not allow zero initial number of elements per page";
+      options.SetMaxUnzippedPageSize(10);
+      FAIL() << "should not allow undersized pages";
    } catch (const RException &err) {
-      EXPECT_THAT(err.what(), testing::HasSubstr("number of elements per page"));
+      EXPECT_THAT(err.what(), testing::HasSubstr("must not be larger than"));
    }
-   options.SetMaxUnzippedPageSize(10);
    try {
       options.SetMaxUnzippedClusterSize(40);
       FAIL() << "should not allow undersized cluster";
@@ -173,21 +179,15 @@ TEST(RNTuple, InvalidWriteOptions)
    FileRaii fileGuard("test_ntuple_invalid_write_options.root");
    auto model = RNTupleModel::Create();
    model->MakeField<std::int16_t>("x");
-   options.SetMaxUnzippedPageSize(20);
+   options.SetInitialUnzippedPageSize(1);
    auto m2 = model->Clone();
    try {
       auto ntuple = RNTupleWriter::Recreate(std::move(model), "ntpl", fileGuard.GetPath(), options);
       FAIL() << "should not allow undersized pages";
    } catch (const RException &err) {
-      EXPECT_THAT(err.what(), testing::HasSubstr("initial number of elements per page"));
+      EXPECT_THAT(err.what(), testing::HasSubstr("too small for at least one element"));
    }
    options.SetApproxZippedClusterSize(10 * 1000 * 1000);
-   options.SetMaxUnzippedPageSize(options.GetInitialNElementsPerPage() * sizeof(std::int16_t));
-   try {
-      auto ntuple = RNTupleWriter::Recreate(std::move(m2), "ntpl", fileGuard.GetPath(), options);
-   } catch (const RException &err) {
-      FAIL() << "pages size should be just large enough";
-   }
 }
 
 TEST(RNTuple, PageFilling)
@@ -201,7 +201,7 @@ TEST(RNTuple, PageFilling)
       auto fldY = model->MakeField<double>("y");
 
       RNTupleWriteOptions options;
-      options.SetInitialNElementsPerPage(3);
+      options.SetInitialUnzippedPageSize(24);
       options.SetMaxUnzippedPageSize(24);
       auto writer = RNTupleWriter::Recreate(std::move(model), "ntpl", fileGuard.GetPath(), options);
       for (int i = 0; i < 6; ++i)
@@ -234,7 +234,7 @@ TEST(RNTuple, PageFillingString)
       auto fldX = model->MakeField<std::string>("x");
 
       RNTupleWriteOptions options;
-      options.SetInitialNElementsPerPage(1);
+      options.SetInitialUnzippedPageSize(8);
       options.SetMaxUnzippedPageSize(16);
       auto ntuple = RNTupleWriter::Recreate(std::move(model), "ntpl", fileGuard.GetPath(), options);
       // 2 page: 16 + 1 characters
@@ -328,7 +328,7 @@ TEST(RNTuple, WritePageBudgetLimit)
 
    RNTupleWriteOptions options;
    options.SetUseBufferedWrite(false);
-   options.SetInitialNElementsPerPage(1);
+   options.SetInitialUnzippedPageSize(4);
    options.SetPageBufferBudget(3);
    try {
       RNTupleWriter::Recreate(std::move(model), "ntpl", fileGuard.GetPath(), options);
@@ -361,7 +361,7 @@ TEST(RNTuple, WritePageBudget)
 
    RNTupleWriteOptions options;
    options.SetUseBufferedWrite(false);
-   options.SetInitialNElementsPerPage(1);
+   options.SetInitialUnzippedPageSize(8);
    options.SetPageBufferBudget(50 * 8);
    auto writer = RNTupleWriter::Recreate(std::move(model), "ntpl", fileGuard.GetPath(), options);
 
@@ -502,7 +502,7 @@ TEST(RNTuple, TMemFile)
 
    {
       auto model = RNTupleModel::Create();
-      auto pt = model->MakeField<float>("pt", 42.0);
+      *model->MakeField<float>("pt") = 42.0;
 
       auto writer = RNTupleWriter::Append(std::move(model), "ntpl", file);
       writer->Fill();
@@ -681,10 +681,10 @@ TEST(RPageSinkBuf, ParallelZipIMT)
          FileRaii fileGuard(filename);
 
          auto model = ROOT::Experimental::RNTupleModel::Create();
-         auto wrPt = model->MakeField<float>("pt", 42.0);
+         *model->MakeField<float>("pt") = 42.0;
 
          RNTupleWriteOptions options;
-         options.SetInitialNElementsPerPage(1);
+         options.SetInitialUnzippedPageSize(4);
          options.SetMaxUnzippedPageSize(8);
          options.SetUseBufferedWrite(true);
          auto writer =
@@ -709,7 +709,7 @@ TEST(RPageSinkBuf, ParallelZipIMT)
 TEST(RPageSinkBuf, CommitSealedPageV)
 {
    RNTupleWriteOptions options;
-   options.SetInitialNElementsPerPage(1);
+   options.SetInitialUnzippedPageSize(8);
    options.SetMaxUnzippedPageSize(16);
 
    {
@@ -764,7 +764,7 @@ TEST(RPageSink, Empty)
 
    {
       auto model = RNTupleModel::Create();
-      auto wrPt = model->MakeField<float>("pt", 42.0);
+      model->MakeField<float>("pt");
       auto ntuple = RNTupleWriter::Recreate(std::move(model), "f", fileGuard.GetPath());
    }
 
@@ -780,8 +780,9 @@ TEST(RPageSink, MultipleClusterGroups)
 
    {
       auto model = RNTupleModel::Create();
-      auto wrPt = model->MakeField<float>("pt", 42.0);
+      auto wrPt = model->MakeField<float>("pt");
       auto ntuple = RNTupleWriter::Recreate(std::move(model), "f", fileGuard.GetPath());
+      *wrPt = 42.0;
       ntuple->Fill();
       ntuple->CommitCluster();
       // This pattern should work: CommitCluster(false) followed by CommitCluster(true) and
@@ -954,7 +955,7 @@ TEST(RPageStorageFile, MultiKeyBlob_PageList)
    constexpr auto kMaxKeySize = 1024;
 
    auto optionsComp = RNTupleWriteOptions{};
-   optionsComp.SetInitialNElementsPerPage(16);
+   optionsComp.SetInitialUnzippedPageSize(128);
    optionsComp.SetMaxUnzippedPageSize(128);
    RNTupleWriteOptionsManip::SetMaxKeySize(optionsComp, kMaxKeySize);
    auto optionsUcmp = optionsComp.Clone();
@@ -1072,8 +1073,8 @@ TEST(RPageSink, SamePageMerging)
 
    for (auto enable : {true, false}) {
       auto model = RNTupleModel::Create();
-      model->MakeField<float>("px", 1.0);
-      model->MakeField<float>("py", 1.0);
+      *model->MakeField<float>("px") = 1.0;
+      *model->MakeField<float>("py") = 1.0;
       RNTupleWriteOptions options;
       options.SetEnablePageChecksums(enable);
       auto writer = RNTupleWriter::Recreate(std::move(model), "ntpl", fileGuard.GetPath(), options);

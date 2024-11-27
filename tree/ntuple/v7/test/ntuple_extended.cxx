@@ -120,8 +120,8 @@ TEST(RNTuple, MultiColumnExpansion)
       auto model = RNTupleModel::Create();
       model->AddField(RFieldBase::Create("pt", "Double32_t").Unwrap());
       RNTupleWriteOptions options;
+      options.SetInitialUnzippedPageSize(8);
       options.SetMaxUnzippedPageSize(32);
-      options.SetInitialNElementsPerPage(1);
       auto writer = RNTupleWriter::Recreate(std::move(model), "ntpl", fileGuard.GetPath(), options);
 
       auto ptrPt = writer->GetModel().GetDefaultEntry().GetPtr<double>("pt");
@@ -191,7 +191,7 @@ TEST(RNTuple, RandomAccess)
 
    std::int64_t sum = 0;
    std::int64_t expected = 0;
-   constexpr unsigned int nSamples = 10000;
+   constexpr unsigned int nSamples = 50000;
    TRandom3 rnd(42);
    for (unsigned int i = 0; i < nSamples; ++i) {
       auto entryId = floor(rnd.Rndm() * (nEvents - 1));
@@ -275,7 +275,7 @@ TEST(RNTuple, LargeFile2)
 
    // Start out with a mini-file created small file
    auto model = RNTupleModel::Create();
-   auto pt = model->MakeField<float>("pt", 42.0);
+   *model->MakeField<float>("pt") = 42.0;
    auto writer = RNTupleWriter::Recreate(std::move(model), "small", fileGuard.GetPath());
    writer->Fill();
    writer = nullptr;

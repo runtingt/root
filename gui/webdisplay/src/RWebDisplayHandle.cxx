@@ -16,7 +16,7 @@
 
 #include "RConfigure.h"
 #include "TSystem.h"
-#include "TRandom.h"
+#include "TRandom3.h"
 #include "TString.h"
 #include "TObjArray.h"
 #include "THttpServer.h"
@@ -563,7 +563,8 @@ std::string RWebDisplayHandle::ChromeCreator::MakeProfile(std::string &exec, boo
    if (chrome_profile && *chrome_profile) {
       profile_arg = chrome_profile;
    } else {
-      gRandom->SetSeed(0);
+      TRandom3 rnd;
+      rnd.SetSeed(0);
       profile_arg = gSystem->TempDirectory();
 #ifdef _MSC_VER
       char slash = '\\';
@@ -572,7 +573,7 @@ std::string RWebDisplayHandle::ChromeCreator::MakeProfile(std::string &exec, boo
 #endif
       if (!profile_arg.empty() && (profile_arg[profile_arg.length()-1] != slash))
          profile_arg += slash;
-      profile_arg += "root_chrome_profile_"s + std::to_string(gRandom->Integer(0x100000));
+      profile_arg += "root_chrome_profile_"s + std::to_string(rnd.Integer(0x100000));
 
       rmdir = profile_arg;
    }
@@ -644,8 +645,8 @@ std::string RWebDisplayHandle::FirefoxCreator::MakeProfile(std::string &exec, bo
    } else if (ff_profilepath && *ff_profilepath) {
       profile_arg = "-profile "s + ff_profilepath;
    } else if (ff_randomprofile > 0) {
-
-      gRandom->SetSeed(0);
+      TRandom3 rnd;
+      rnd.SetSeed(0);
       std::string profile_dir = gSystem->TempDirectory();
 
 #ifdef _MSC_VER
@@ -655,7 +656,7 @@ std::string RWebDisplayHandle::FirefoxCreator::MakeProfile(std::string &exec, bo
 #endif
       if (!profile_dir.empty() && (profile_dir[profile_dir.length()-1] != slash))
          profile_dir += slash;
-      profile_dir += "root_ff_profile_"s + std::to_string(gRandom->Integer(0x100000));
+      profile_dir += "root_ff_profile_"s + std::to_string(rnd.Integer(0x100000));
 
       profile_arg = "-profile "s + profile_dir;
 
@@ -1199,9 +1200,11 @@ try_again:
       if (chrome_tmp_workaround) {
          std::string homedir = gSystem->GetHomeDirectory();
          auto pos = html_name.Last('/');
-         if (pos == kNPOS)
-            html_name = TString::Format("/random%d.html", gRandom->Integer(1000000));
-         else
+         if (pos == kNPOS) {
+            TRandom3 rnd;
+            rnd.SetSeed(0);
+            html_name = TString::Format("/random%d.html", rnd.Integer(1000000));
+         } else
             html_name.Remove(0, pos);
          html_name = homedir + html_name.Data();
          gSystem->Unlink(html_name.Data());
@@ -1294,7 +1297,6 @@ try_again:
          // chrome creates dummy html file with mostly no content
          // problem running chrome from /tmp directory, lets try work from home directory
 
-         printf("Handle chrome workaround\n");
          chrome_tmp_workaround = true;
          goto try_again;
       }
@@ -1315,29 +1317,34 @@ try_again:
             p = p2 + 6;
             std::ofstream ofs(fnames[n]);
             if ((p1 != std::string::npos) && (p2 != std::string::npos) && (p1 < p2)) {
-               ofs << dumpcont.substr(p1, p2-p1+6);
-               ::Info("ProduceImages", "SVG file %s size %d bytes has been created", fnames[n].c_str(), (int) (p2-p1+6));
+               if (p2 - p1 > 10) {
+                  ofs << dumpcont.substr(p1, p2 - p1 + 6);
+                  ::Info("ProduceImages", "SVG file %s size %d bytes has been created", fnames[n].c_str(), (int) (p2 - p1 + 6));
+               } else {
+                  ::Error("ProduceImages", "Failure producing %s", fnames[n].c_str());
+               }
             } else {
-               R__LOG_ERROR(WebGUILog()) << "Fail to extract SVG from HTML dump " << dump_name;
-               ofs << "Failure!!!\n" << dumpcont;
+               ::Error("ProduceImages", "Fail to extract %s from HTML dump", fnames[n].c_str());
                return false;
             }
          } else {
-            auto p1 = dumpcont.find(";base64,", p);
+            auto p0 = dumpcont.find("<img src=", p);
+            auto p1 = dumpcont.find(";base64,", p0 + 8);
             auto p2 = dumpcont.find("></div>", p1 + 4);
             p = p2 + 5;
 
-            if ((p1 != std::string::npos) && (p2 != std::string::npos) && (p1 < p2)) {
+            if ((p0 != std::string::npos) && (p1 != std::string::npos) && (p2 != std::string::npos) && (p1 < p2)) {
                auto base64 = dumpcont.substr(p1+8, p2-p1-9);
-               auto binary = TBase64::Decode(base64.c_str());
-
-               std::ofstream ofs(fnames[n], std::ios::binary);
-               ofs.write(binary.Data(), binary.Length());
-
-               ::Info("ProduceImages", "Image file %s size %d bytes has been created", fnames[n].c_str(), (int) binary.Length());
+               if ((base64 == "failure") || (base64.length() < 10)) {
+                  ::Error("ProduceImages", "Failure producing %s", fnames[n].c_str());
+               } else {
+                  auto binary = TBase64::Decode(base64.c_str());
+                  std::ofstream ofs(fnames[n], std::ios::binary);
+                  ofs.write(binary.Data(), binary.Length());
+                  ::Info("ProduceImages", "Image file %s size %d bytes has been created", fnames[n].c_str(), (int) binary.Length());
+               }
             } else {
-               R__LOG_ERROR(WebGUILog()) << "Fail to extract image from dump HTML code " << dump_name;
-
+               ::Error("ProduceImages", "Fail to extract %s from HTML dump", fnames[n].c_str());
                return false;
             }
          }

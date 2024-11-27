@@ -41,6 +41,8 @@
 #include "TEnv.h"
 #include "TError.h"
 #include "TGraph.h"
+#include "TGraphPolar.h"
+#include "TGraphPolargram.h"
 #include "TGraph2D.h"
 #include "TGaxis.h"
 #include "TScatter.h"
@@ -672,7 +674,7 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
    TObject *obj = nullptr;
    TFrame *frame = nullptr;
    TPaveText *title = nullptr;
-   bool need_frame = false, has_histo = false, need_palette = false;
+   bool need_frame = false, has_histo = false, has_polar = false, need_palette = false;
    std::string need_title;
 
    auto checkNeedPalette = [](TH1* hist, const TString &opt) {
@@ -728,10 +730,14 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
             need_title = obj->GetTitle();
          if (checkNeedPalette(static_cast<TH1*>(obj), opt))
             need_palette = true;
+      } else if (obj->InheritsFrom(TGraphPolar::Class())) {
+         if (!has_polar)
+            need_title = obj->GetTitle();
+         has_polar = true;
       } else if (obj->InheritsFrom(TGraph::Class())) {
          if (opt.Contains("A")) {
             need_frame = true;
-            if (!has_histo && (strlen(obj->GetTitle()) > 0))
+            if (!has_histo && (strlen(obj->GetTitle()) > 0) && !obj->TestBit(TH1::kNoTitle))
                need_title = obj->GetTitle();
          }
       } else if (obj->InheritsFrom(TGraph2D::Class())) {
@@ -742,9 +748,11 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
          if (strlen(obj->GetTitle()) > 0)
             need_title = obj->GetTitle();
       } else if (obj->InheritsFrom(TF1::Class())) {
-         need_frame = !obj->InheritsFrom(TF2::Class());
-         if (!has_histo && (strlen(obj->GetTitle()) > 0))
-            need_title = obj->GetTitle();
+         if (!opt.Contains("SAME")) {
+            need_frame = !obj->InheritsFrom(TF2::Class());
+            if (!has_histo && (strlen(obj->GetTitle()) > 0))
+               need_title = obj->GetTitle();
+         }
       } else if (obj->InheritsFrom(TPaveText::Class())) {
          if (strcmp(obj->GetName(), "title") == 0)
             title = static_cast<TPaveText *>(obj);
@@ -820,7 +828,7 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
 
    auto create_stats = [&]() {
       TPaveStats *stats = nullptr;
-      if ((gStyle->GetOptStat() > 0) && CanCreateObject("TPaveStats")) {
+      if (CanCreateObject("TPaveStats")) {
          stats = new TPaveStats(
                         gStyle->GetStatX() - gStyle->GetStatW(),
                         gStyle->GetStatY() - gStyle->GetStatH(),
@@ -869,9 +877,11 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
         }
       }
 
-      if (!stats && has_tf1 && gr && !gr->TestBit(TGraph::kNoStats)) {
+      if (!stats && has_tf1 && gr && !gr->TestBit(TGraph::kNoStats) && (gStyle->GetOptFit() > 0)) {
          stats = create_stats();
          if (stats) {
+            stats->SetOptStat(0);
+            stats->SetOptFit(gStyle->GetOptFit());
             stats->SetParent(funcs);
             funcs->Add(stats);
          }
@@ -935,7 +945,7 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
          TString o = hopt;
          o.ToUpper();
 
-         if (!stats && (first_obj || o.Contains("SAMES"))) {
+         if (!stats && (first_obj || o.Contains("SAMES")) && (gStyle->GetOptStat() > 0)) {
             stats = create_stats();
             if (stats) {
                 stats->SetParent(hist);
@@ -957,6 +967,25 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
             check_cutg_in_options(iter.GetOption());
 
          first_obj = false;
+      } else if (obj->InheritsFrom(TGraphPolar::Class())) {
+         flush_master();
+
+         TGraphPolar *polar = static_cast<TGraphPolar *>(obj);
+
+         check_graph_funcs(polar);
+
+         TString gropt = iter.GetOption();
+
+         if (!IsReadOnly() && (first_obj || (gropt.Index("A", 0, TString::kIgnoreCase) != kNPOS) || polar->GetOptionAxis()) && !polar->GetPolargram()) {
+            auto gram = new TGraphPolargram("Polargram",0, 10, 0, 2*TMath::Pi());
+            gram->SetBit(TGraphPolargram::kLabelOrtho, gropt.Index("O", 0, TString::kIgnoreCase) != kNPOS);
+            polar->SetPolargram(gram);
+            polar->SetOptionAxis(kFALSE);
+         }
+
+         paddata.NewPrimitive(obj, gropt.Data()).SetSnapshot(TWebSnapshot::kObject, obj);
+
+         first_obj = false;
       } else if (obj->InheritsFrom(TGraph::Class())) {
          flush_master();
 
@@ -968,7 +997,7 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
 
          // ensure histogram exists on server to draw it properly on clients side
          if (!IsReadOnly() && (first_obj || gropt.Index("A", 0, TString::kIgnoreCase) != kNPOS ||
-               (gropt.Index("X+", 0, TString::kIgnoreCase) != kNPOS) || (gropt.Index("X+", 0, TString::kIgnoreCase) != kNPOS)))
+               (gropt.Index("X+", 0, TString::kIgnoreCase) != kNPOS) || (gropt.Index("Y+", 0, TString::kIgnoreCase) != kNPOS)))
             gr->GetHistogram();
 
          paddata.NewPrimitive(obj, gropt.Data()).SetSnapshot(TWebSnapshot::kObject, obj);
@@ -986,9 +1015,10 @@ void TWebCanvas::CreatePadSnapshot(TPadWebSnapshot &paddata, TPad *pad, Long64_t
             TString gropt = iter.GetOption();
             gropt.ToUpper();
             Bool_t zscale = gropt.Contains("TRI1") || gropt.Contains("TRI2") || gropt.Contains("COL");
-            Bool_t real_draw = gropt.Contains("TRI") || gropt.Contains("LINE") || gropt.Contains("ERR") || gropt.Contains("P0");
+            Bool_t cont5_draw = gropt.Contains("CONT5");
+            Bool_t real_draw = gropt.Contains("TRI") || gropt.Contains("LINE") || gropt.Contains("ERR") || gropt.Contains("P") || cont5_draw;
 
-            TString hopt = !real_draw ? iter.GetOption() : (zscale ? "lego2z" : "lego2");
+            TString hopt = !real_draw ? iter.GetOption() : (cont5_draw ? "" : (zscale ? "lego2z" : "lego2"));
             if (title) hopt.Append(";;use_pad_title");
 
             // if gr2d not draw - let create histogram with correspondent content
@@ -2837,6 +2867,9 @@ TObject *TWebCanvas::FindPrimitive(const std::string &sid, int idcnt, TPad *pad,
                obj = col->FindObject(funcname.c_str());
             else
                obj = col->At(std::stoi(funcname));
+         } else if (kind.compare("polargram") == 0) {
+            auto polar = dynamic_cast<TGraphPolar *>(obj);
+            obj = polar ? polar->GetPolargram() : nullptr;
          } else if (kind.compare(0,7,"graphs_") == 0) {
             TList *graphs = mg ? mg->GetListOfGraphs() : nullptr;
             obj = graphs ? graphs->At(std::stoi(kind.substr(7))) : nullptr;

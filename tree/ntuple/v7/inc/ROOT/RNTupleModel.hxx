@@ -131,6 +131,9 @@ Models have a unique model identifier that faciliates checking whether entries a
 
 A model is subject to a state transition during its lifetime: it starts in a building state, in which fields can be
 added and modified.  Once the schema is finalized, the model gets frozen.  Only frozen models can create entries.
+From frozen, models move into a expired state.  In this state, the model is only partially usable: it can be cloned
+and queried, but it can't be unfrozen anymore and no new entries can be created.  This state is used for models
+that were used for writing and are no longer connected to a page sink.
 */
 // clang-format on
 class RNTupleModel {
@@ -176,10 +179,10 @@ public:
       /// Upon completion, `BeginUpdate()` can be called again to begin a new set of changes.
       void CommitUpdate();
 
-      template <typename T, typename... ArgsT>
-      std::shared_ptr<T> MakeField(const NameWithDescription_t &fieldNameDesc, ArgsT &&...args)
+      template <typename T>
+      std::shared_ptr<T> MakeField(const NameWithDescription_t &fieldNameDesc)
       {
-         auto objPtr = fOpenChangeset.fModel.MakeField<T>(fieldNameDesc, std::forward<ArgsT>(args)...);
+         auto objPtr = fOpenChangeset.fModel.MakeField<T>(fieldNameDesc);
          auto fieldZero = fOpenChangeset.fModel.fFieldZero.get();
          auto it = std::find_if(fieldZero->begin(), fieldZero->end(),
                                 [&](const auto &f) { return f.GetFieldName() == fieldNameDesc.fName; });
@@ -194,6 +197,14 @@ public:
    };
 
 private:
+   // The states a model can be in. Possible transitions are between kBuilding and kFrozen
+   // and from kFrozen to kExpired.
+   enum class EState {
+      kBuilding,
+      kFrozen,
+      kExpired
+   };
+
    /// Hierarchy of fields consisting of simple types and collections (sub trees)
    std::unique_ptr<RFieldZero> fFieldZero;
    /// Contains field values corresponding to the created top-level fields, as well as registered subfields
@@ -207,12 +218,12 @@ private:
    /// Keeps track of which subfields have been registered to be included in entries belonging to this model.
    std::unordered_set<std::string> fRegisteredSubfields;
    /// Every model has a unique ID to distinguish it from other models. Entries are linked to models via the ID.
-   /// Cloned models get a new model ID.
+   /// Cloned models get a new model ID. Expired models are cloned into frozen models.
    std::uint64_t fModelId = 0;
    /// Models have a separate schema ID to remember that the clone of a frozen model still has the same schema.
    std::uint64_t fSchemaId = 0;
    /// Changed by Freeze() / Unfreeze() and by the RUpdater.
-   bool fIsFrozen = false;
+   EState fModelState = EState::kBuilding;
 
    /// Checks that user-provided field names are valid in the context of this RNTuple model.
    /// Throws an RException for invalid names, empty names (which is reserved for the zero field) and duplicate field
@@ -247,7 +258,7 @@ public:
    static std::unique_ptr<RNTupleModel> CreateBare(std::unique_ptr<RFieldZero> fieldZero);
 
    /// Creates a new field given a `name` or `{name, description}` pair and a
-   /// corresponding value that is managed by a shared pointer.
+   /// corresponding, default-constructed value that is managed by a shared pointer.
    ///
    /// **Example: create some fields and fill an %RNTuple**
    /// ~~~ {.cpp}
@@ -273,15 +284,6 @@ public:
    /// }
    /// ~~~
    ///
-   /// **Example: create a field with an initial value**
-   /// ~~~ {.cpp}
-   /// #include <ROOT/RNTupleModel.hxx>
-   /// using ROOT::Experimental::RNTupleModel;
-   ///
-   /// auto model = RNTupleModel::Create();
-   /// // pt's initial value is 42.0
-   /// auto pt = model->MakeField<float>("pt", 42.0);
-   /// ~~~
    /// **Example: create a field with a description**
    /// ~~~ {.cpp}
    /// #include <ROOT/RNTupleModel.hxx>
@@ -292,8 +294,8 @@ public:
    ///    "hadronFlavour", "flavour from hadron ghost clustering"
    /// });
    /// ~~~
-   template <typename T, typename... ArgsT>
-   std::shared_ptr<T> MakeField(const NameWithDescription_t &fieldNameDesc, ArgsT &&...args)
+   template <typename T>
+   std::shared_ptr<T> MakeField(const NameWithDescription_t &fieldNameDesc)
    {
       EnsureNotFrozen();
       EnsureValidFieldName(fieldNameDesc.fName);
@@ -301,7 +303,7 @@ public:
       field->SetDescription(fieldNameDesc.fDescription);
       std::shared_ptr<T> ptr;
       if (fDefaultEntry)
-         ptr = fDefaultEntry->AddValue<T>(*field, std::forward<ArgsT>(args)...);
+         ptr = fDefaultEntry->AddValue<T>(*field);
       fFieldNames.insert(field->GetFieldName());
       fFieldZero->Attach(std::move(field));
       return ptr;
@@ -361,7 +363,9 @@ public:
 
    void Freeze();
    void Unfreeze();
-   bool IsFrozen() const { return fIsFrozen; }
+   void Expire();
+   bool IsExpired() const { return fModelState == EState::kExpired; }
+   bool IsFrozen() const { return (fModelState == EState::kFrozen) || (fModelState == EState::kExpired); }
    bool IsBare() const { return !fDefaultEntry; }
    std::uint64_t GetModelId() const { return fModelId; }
    std::uint64_t GetSchemaId() const { return fSchemaId; }

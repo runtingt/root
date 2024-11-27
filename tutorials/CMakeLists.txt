@@ -152,8 +152,6 @@ else()
     # IncrementalExecutor::executeFunction: symbol '__std_find_trivial_4@12' unresolved while linking [cling interface function]!
     # on Windows 32 bit and Visual Studio v17.8
     list(APPEND roofit_veto roofit/rf509_wsinteractive.C roofit/rf614_binned_fit_problems.C)
-    # The following tutorial fails with a segfault (see #15364)
-    list(APPEND roofit_veto roostats/rs101_limitexample.py)
   endif()
 endif()
 
@@ -404,7 +402,7 @@ set(extra_veto
   multicore/mp_H1_lambdas.C # not a tutorial; used by mp104_processH1.C et al.
   html/*.C
   net/*.C
-  proof/*.C
+  legacy/proof/*.C
   sql/*.C
   tree/hsimpleProxy.C # A driver uses this macro which cannot be executed directly
   tree/tree0.C

@@ -85,12 +85,11 @@ extern "C" {
 }
 
 class AutoloadLibraryMU : public llvm::orc::MaterializationUnit {
-   const TClingCallbacks &fCallbacks;
    std::string fLibrary;
    llvm::orc::SymbolNameVector fSymbols;
 public:
-   AutoloadLibraryMU(const TClingCallbacks &cb, const std::string &Library, const llvm::orc::SymbolNameVector &Symbols)
-      : MaterializationUnit({getSymbolFlagsMap(Symbols), nullptr}), fCallbacks(cb), fLibrary(Library), fSymbols(Symbols)
+   AutoloadLibraryMU(const std::string &Library, const llvm::orc::SymbolNameVector &Symbols)
+      : MaterializationUnit({getSymbolFlagsMap(Symbols), nullptr}), fLibrary(Library), fSymbols(Symbols)
    {
    }
 
@@ -98,11 +97,6 @@ public:
 
    void materialize(std::unique_ptr<llvm::orc::MaterializationResponsibility> R) override
    {
-      if (!fCallbacks.IsAutoLoadingEnabled()) {
-         R->failMaterialization();
-         return;
-      }
-
       llvm::orc::SymbolMap loadedSymbols;
       llvm::orc::SymbolNameSet failedSymbols;
       bool loadedLibrary = false;
@@ -174,7 +168,7 @@ public:
                              const llvm::orc::SymbolLookupSet &Symbols) override
    {
       if (!fCallbacks.IsAutoLoadingEnabled())
-         llvm::Error::success();
+         return llvm::Error::success();
 
       // If we get here, the symbols have not been found in the current process,
       // so no need to check that again. Instead search for the library that
@@ -207,7 +201,7 @@ public:
       }
 
       for (auto &&KV : found) {
-         auto MU = std::make_unique<AutoloadLibraryMU>(fCallbacks, KV.first, std::move(KV.second));
+         auto MU = std::make_unique<AutoloadLibraryMU>(KV.first, std::move(KV.second));
          if (auto Err = JD.define(MU))
             return Err;
       }

@@ -50,6 +50,7 @@ ROOT_ADD_GTEST(ntuple_packing ntuple_packing.cxx LIBRARIES ROOTNTuple CustomStru
 ROOT_ADD_GTEST(ntuple_pages ntuple_pages.cxx LIBRARIES ROOTNTuple CustomStruct)
 ROOT_ADD_GTEST(ntuple_print ntuple_print.cxx LIBRARIES ROOTNTuple CustomStruct)
 ROOT_ADD_GTEST(ntuple_processor_chain ntuple_processor_chain.cxx LIBRARIES ROOTNTuple)
+ROOT_ADD_GTEST(ntuple_processor_join ntuple_processor_join.cxx LIBRARIES ROOTNTuple)
 ROOT_ADD_GTEST(ntuple_project ntuple_project.cxx LIBRARIES ROOTNTuple)
 ROOT_ADD_GTEST(ntuple_modelext ntuple_modelext.cxx LIBRARIES ROOTNTuple MathCore CustomStruct)
 ROOT_ADD_GTEST(ntuple_serialize ntuple_serialize.cxx LIBRARIES ROOTNTuple CustomStruct)
@@ -135,5 +136,6 @@ endif()
 
 # RNTuple Python interface tests
 if(pyroot)
+  ROOT_ADD_PYUNITTEST(ntuple_py_basics ntuple_basics.py)
   ROOT_ADD_PYUNITTEST(ntuple_py_model ntuple_model.py)
 endif()

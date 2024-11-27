@@ -21,10 +21,12 @@
 #include <ROOT/RNTupleUtil.hxx>
 
 #include <cstddef>
+#include <map>
 #include <mutex>
 #include <typeindex>
 #include <typeinfo>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace ROOT {
@@ -79,14 +81,52 @@ private:
       std::int64_t fRefCounter = 0;
    };
 
+   /// Used in fLookupByKey to store both the absolute and the cluster-local page index of the referenced page.
+   /// This allows to do binary search for one or the other. Note that elements in fLookupByKey must have
+   /// _both_ values to be valid. If RPagePosition is used as a search key, only one of the two needs to be set.
+   struct RPagePosition {
+      NTupleSize_t fGlobalFirstElement = kInvalidNTupleIndex;
+      RClusterIndex fClusterFirstElement;
+
+      bool operator<(const RPagePosition &other) const
+      {
+         if ((fGlobalFirstElement != kInvalidNTupleIndex) && (other.fGlobalFirstElement != kInvalidNTupleIndex))
+            return fGlobalFirstElement < other.fGlobalFirstElement;
+
+         assert(fClusterFirstElement.GetClusterId() != kInvalidDescriptorId &&
+                fClusterFirstElement.GetIndex() != kInvalidClusterIndex);
+         assert(other.fClusterFirstElement.GetClusterId() != kInvalidDescriptorId &&
+                other.fClusterFirstElement.GetIndex() != kInvalidClusterIndex);
+         if (fClusterFirstElement.GetClusterId() == other.fClusterFirstElement.GetClusterId())
+            return fClusterFirstElement.GetIndex() < other.fClusterFirstElement.GetIndex();
+         return fClusterFirstElement.GetClusterId() < other.fClusterFirstElement.GetClusterId();
+      }
+
+      // Constructor used to store a page in fLookupByKey
+      explicit RPagePosition(const RPage &page)
+         : fGlobalFirstElement(page.GetGlobalRangeFirst()),
+           fClusterFirstElement({page.GetClusterInfo().GetId(), page.GetClusterRangeFirst()})
+      {
+      }
+
+      // Search key constructors
+      explicit RPagePosition(NTupleSize_t globalIndex) : fGlobalFirstElement(globalIndex) {}
+      explicit RPagePosition(RClusterIndex clusterIndex) : fClusterFirstElement(clusterIndex) {}
+   };
+
    std::vector<REntry> fEntries; ///< All cached pages in the page pool
    /// Used in ReleasePage() to find the page index in fPages
    std::unordered_map<void *, std::size_t> fLookupByBuffer;
    /// Used in GetPage() to find the right page in fEntries. Lookup for the key (pair of on-disk and in-memory type)
-   /// takes place in O(1). The selected pages are identified by index into the fEntries vector. Access in this
-   /// selected set is linear. We may consider replacing this in the future by a sorted list of pages (e.g., std::set).
-   /// That comes at a code complexity cost though.
-   std::unordered_map<RKey, std::vector<std::size_t>, RKeyHasher> fLookupByKey;
+   /// takes place in O(1). The selected pages are identified by index into the fEntries vector (map's value)
+   /// and sorted by the position of the page in the column (map's key). Thus, access to pages of the page set
+   /// has logarithmic complexity.
+   std::unordered_map<RKey, std::map<RPagePosition, std::size_t>, RKeyHasher> fLookupByKey;
+   /// Remembers pages with reference counter 0, organized by the page's cluster id. The pages are identified
+   /// by their page buffer address. The fLookupByBuffer map can be used to resolve the address to a page.
+   /// Once a page gets used, it is removed from the unused pages list. Evict will remove all unused pages
+   /// from a given cluster id.
+   std::unordered_map<DescriptorId_t, std::unordered_set<void *>> fUnusedPages;
    std::mutex fLock; ///< The page pool is accessed concurrently due to parallel decompression
 
    /// Add a new page to the fLookupByBuffer and fLookupByKey data structures.
@@ -97,6 +137,12 @@ private:
    /// during registration. Called by the RPageRef destructor.
    void ReleasePage(const RPage &page);
 
+   /// Called by GetPage(), when the reference counter increases from zero to one
+   void RemoveFromUnusedPages(const RPage &page);
+
+   /// Called both by ReleasePage() and by Evict() to remove an unused page from the pool
+   void ErasePage(std::size_t entryIdx, decltype(fLookupByBuffer)::iterator lookupByBufferItr);
+
 public:
    RPagePool() = default;
    RPagePool(const RPagePool&) = delete;
@@ -106,8 +152,12 @@ public:
    /// Adds a new page to the pool. Upon registration, the page pool takes ownership of the page's memory.
    /// The new page has its reference counter set to 1.
    RPageRef RegisterPage(RPage page, RKey key);
-   /// Like RegisterPage() but the reference counter is initialized to 0
+   /// Like RegisterPage() but the reference counter is initialized to 0. In addition, the page is added
+   /// to the set of unused pages of the page's cluster (see Evict()).
    void PreloadPage(RPage page, RKey key);
+   /// Removes unused pages (pages with reference counter 0) from the page pool. Users of PreloadPage() should
+   /// use Evict() appropriately to avoid accumulation of unused pages.
+   void Evict(DescriptorId_t clusterId);
    /// Tries to find the page corresponding to column and index in the cache. If the page is found, its reference
    /// counter is increased
    RPageRef GetPage(RKey key, NTupleSize_t globalIndex);
